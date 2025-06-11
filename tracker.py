@@ -21,7 +21,7 @@ FIRST_RAREST_PEERS = 50
 def handle_peer(peer_sock: socket, peer_addr):
     send_with_size(peer_sock,b"hiii")
     while True:
-        Recv_And_process_peer_message(peer_sock,peer_adress)
+        Recv_And_process_peer_message(peer_sock,peer_addr)
 
 
 def Recv_And_process_peer_message(peer_sock : socket, peer_adress: tuple):

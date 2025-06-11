@@ -6,7 +6,7 @@ import json
 import hashlib
 import time
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, ttk
 import win32api
 import win32process
 import threading
@@ -33,7 +33,14 @@ SEED_PORT = 1234
 MAX_PEERS_DOWNLOADING = 5
 SEED_DIRECTORY = "SEED"
 SEEDING_PATH_LOCK = threading.Lock()
-
+CNT_DOWNLOADED_PIECES = 0
+CNT_DOWNLOADED_PIECES_LOCK = threading.Lock()
+UPDATE_PROGRESS_BAR_TIME = 300 #in miliseconds
+REQUEST_PEERS_AGAIN_TIME = 60
+PROGRESS_BAR_WINDOW: tk
+PROGRESS_BAR: tk.DoubleVar
+DONE_DOWNLOAD = False
+DONE_DOWNLOAD_LOCK = threading.Lock()
 class SmartBitfield:
     def __init__(self, length, max_peers_downloading):
         self.length = length
@@ -52,10 +59,18 @@ class SmartBitfield:
     def FinishPiece(self, index):
         self.pieces[index] = self.done
 
+    def Is_Piece_Done(self,index):
+        return self.pieces[index] == self.done
     def Failed_Download(self, index):
         if self.download[index]["download"] > 0:
             self.download[index]["download"] -= 1
             self.pieces[index] = self.download[index]
+
+    def Is_All_Done(self):
+        for index in self.pieces:
+            if index != self.done:
+                return False
+        return True
 
     def __repr__(self):
         return ", ".join(str(index) for index in self.pieces)
@@ -85,12 +100,52 @@ def Recv_Peers_From_Tracker(sock: socket, json_sent_mes):
     return Peers_to_connect
 
 
-def Download_From_Peers(peer_list: list, torrent_file_path):
+def show_progress_bar(total_pieces):
+    global PROGRESS_BAR
+    global PROGRESS_BAR_WINDOW
+
+    PROGRESS_BAR_WINDOW = tk.Tk()
+    PROGRESS_BAR_WINDOW.title("Downloading...")
+    PROGRESS_BAR_WINDOW.geometry("400x100")
+
+    label = tk.Label(PROGRESS_BAR_WINDOW, text="Downloading file...", font=("Courier", 12))
+    label.pack(pady=10)
+
+    PROGRESS_BAR = tk.DoubleVar()
+    progressbar_widget = ttk.Progressbar(PROGRESS_BAR_WINDOW, variable=PROGRESS_BAR, maximum=100, length=300)
+    progressbar_widget.pack(pady=5)
+
+    update_progress_bar_loop(total_pieces)
+    PROGRESS_BAR_WINDOW.mainloop()
+
+
+def update_progress_bar_loop(total_pieces):
+    global PROGRESS_BAR
+    global CNT_DOWNLOADED_PIECES
+    global CNT_DOWNLOADED_PIECES_LOCK
+
+    with CNT_DOWNLOADED_PIECES_LOCK:
+        percent_to_put = (CNT_DOWNLOADED_PIECES / total_pieces) * 100
+        done = CNT_DOWNLOADED_PIECES >= total_pieces
+
+    if PROGRESS_BAR:
+        PROGRESS_BAR.set(percent_to_put)
+
+    if not done:
+        PROGRESS_BAR_WINDOW.after(UPDATE_PROGRESS_BAR_TIME, update_progress_bar_loop, total_pieces)
+
+
+
+
+def Download_From_Peers(peer_list: list, torrent_file_path,tracker_sock : socket):
     global CURRENT_DOWNLOAD_FILE_PATH
     global CURRENT_DOWNLOAD_FILE_PATH_LOCK
     global CURRENT_FILE_LOCK
     global CURRENT_DOWNLOAD_FILE_SMART_BITFIELD
     global CURRENT_DOWNLOAD_FILE_SMART_BITFIELD_LOCK
+    global PEER_ID
+    global DONE_DOWNLOAD
+    global DONE_DOWNLOAD_LOCK
 
     file_name = input("enter file name to download to ")
     with CURRENT_DOWNLOAD_FILE_PATH_LOCK:
@@ -101,15 +156,38 @@ def Download_From_Peers(peer_list: list, torrent_file_path):
         CURRENT_DOWNLOAD_FILE_PATH = file_name
 
     torrent_info_dict = Get_Info_Dictionary_From_Torrent_File(torrent_file_path)
+    info_hash = Get_Info_Hash_From_Torrent_File(torrent_file_path)
     pieces = torrent_info_dict.get("Pieces")
     amount_of_pieces = len(pieces)
+
+    #set the gui for downloading file
+    threading.Thread(target=show_progress_bar,args=(amount_of_pieces,), daemon=True).start()
+    threading.Thread(target=update_progress_bar_loop,args=(amount_of_pieces,),daemon=True).start()
+
 
     with CURRENT_DOWNLOAD_FILE_SMART_BITFIELD_LOCK:
         CURRENT_DOWNLOAD_FILE_SMART_BITFIELD = SmartBitfield(amount_of_pieces, MAX_PEERS_DOWNLOADING)
 
-    for peer in peer_list:
-        download_thread = threading.Thread(target=Download_From_Peer, args=(peer,))
-        download_thread.start()
+
+    while True:
+        CURRENT_DOWNLOAD_FILE_SMART_BITFIELD_LOCK.acquire()
+        if not CURRENT_DOWNLOAD_FILE_SMART_BITFIELD.Is_All_Done():
+            CURRENT_DOWNLOAD_FILE_SMART_BITFIELD_LOCK.release()
+            for peer in peer_list:
+                download_thread = threading.Thread(target=Download_From_Peer, args=(peer,))
+                download_thread.start()
+
+            time.sleep(REQUEST_PEERS_AGAIN_TIME)
+            json_request_message = Request_Peers_From_Tracker(tracker_sock,info_hash,PEER_ID)
+            peer_list = Recv_Peers_From_Tracker(tracker_sock, json_request_message)
+
+
+        else:
+            with DONE_DOWNLOAD_LOCK:
+                DONE_DOWNLOAD = True
+
+
+
 
 
 def Download_From_Peer(peer: dict):
@@ -118,6 +196,8 @@ def Download_From_Peer(peer: dict):
     global CURRENT_DOWNLOAD_FILE_SMART_BITFIELD
     global MAX_PEERS_DOWNLOADING
     global CURRENT_DOWNLOAD_FILE_SMART_BITFIELD_LOCK
+    global CNT_DOWNLOADED_PIECES
+    global CNT_DOWNLOADED_PIECES_LOCK
     print("in thread function")
     seeder_ip = peer.get("peer_ip")
     seeder_port = peer.get("peer_port")
@@ -144,6 +224,7 @@ def Download_From_Peer(peer: dict):
 
         for index in range(len(seeders_bitfield)):
             can_download = False
+            can_save = False
             print(repr(CURRENT_DOWNLOAD_FILE_SMART_BITFIELD))
             if seeders_bitfield[index] == "1":
                 CURRENT_DOWNLOAD_FILE_SMART_BITFIELD_LOCK.acquire()
@@ -157,10 +238,16 @@ def Download_From_Peer(peer: dict):
                     if Verify_Downloaded_Piece(downloaded_piece, list_of_pieces_hash[index]):
                         #verify the piece hash with the piece hash from the torrent file
                         print(index)
-                        with CURRENT_DOWNLOAD_FILE_SMART_BITFIELD_LOCK:
+                        CURRENT_DOWNLOAD_FILE_SMART_BITFIELD_LOCK.acquire()
+                        if not CURRENT_DOWNLOAD_FILE_SMART_BITFIELD.Is_Piece_Done(index):
                             CURRENT_DOWNLOAD_FILE_SMART_BITFIELD.FinishPiece(index)
-                        Write_Piece_To_File(downloaded_piece, index, chunk_size)
-                        Write_Piece_To_Seed_Folder(downloaded_piece, index, info_hash)
+                            can_save = True
+                        CURRENT_DOWNLOAD_FILE_SMART_BITFIELD_LOCK.release()
+                        if can_save:
+                            Write_Piece_To_File(downloaded_piece, index, chunk_size)
+                            Write_Piece_To_Seed_Folder(downloaded_piece, index, info_hash)
+                            with CNT_DOWNLOADED_PIECES_LOCK:
+                                CNT_DOWNLOADED_PIECES += 1
                     else:
                         with CURRENT_DOWNLOAD_FILE_SMART_BITFIELD_LOCK:
                             CURRENT_DOWNLOAD_FILE_SMART_BITFIELD.Failed_Download(index)
@@ -184,9 +271,8 @@ def Write_Piece_To_Seed_Folder(downloaded_piece: bytes, index, info_hash):
     hash_of_piece = hashlib.sha256(downloaded_piece).hexdigest()
     target_dir_to_write = dir_to_look + "\\" + str(index) + "_" + str(hash_of_piece)
     print(target_dir_to_write)
-    with open(target_dir_to_write,"wb") as piece_file:
+    with open(target_dir_to_write, "wb") as piece_file:
         piece_file.write(downloaded_piece)
-
 
 
 def Write_Piece_To_File(downloaded_piece: bytes, index: int, chunk_size):
@@ -307,13 +393,10 @@ def Get_Type_Message(message_dictionary: dict):
     return message_dictionary.get("type", "0")
 
 
-def Make_json_request_file(peer_id, torrent_file_path):
-    request_file_dict = {}
-    file_info_hash = Get_Info_Hash_From_Torrent_File(torrent_file_path).decode()
-    print(file_info_hash)
-    request_file_dict["type"] = "request file"
-    request_file_dict["peer_id"] = peer_id
-    request_file_dict["info_hash"] = file_info_hash
+def Make_json_request_file(peer_id, info_hash):
+    request_file_dict = {"type" : "request file",
+                         "peer_id" : peer_id,
+                         "info_hash" : info_hash}
     print(request_file_dict)
     json_serialized_request = json.dumps(request_file_dict)
     return json_serialized_request
@@ -566,6 +649,15 @@ def load_all_torrents():
     print("success loading all torrents")
 
 
+
+def Request_Peers_From_Tracker(sock : socket,info_hash,Peer_id) -> json:
+    json_mes = Make_json_request_file(Peer_id, info_hash)
+    print(json_mes)
+    send_with_size(sock, json_mes.encode())
+    return json_mes
+
+
+
 if __name__ == "__main__":
     '''
     with open("a.txt","wb") as f:
@@ -596,12 +688,16 @@ if __name__ == "__main__":
 
         selected_torrent_file_path = TORRENT_FILES_DIRECTORY + "\\" + SELECTED_FILE
         print("selected file --- " + SELECTED_FILE)
-        json_mes = Make_json_request_file(PEER_ID, selected_torrent_file_path)
-        print(json_mes)
-        send_with_size(client_sock, json_mes.encode())
+
+        info_hash = Get_Info_Hash_From_Torrent_File(selected_torrent_file_path).decode()
+        json_mes = Request_Peers_From_Tracker(client_sock, info_hash, PEER_ID)
+
         peers_to_connect = Recv_Peers_From_Tracker(client_sock, json_mes)
         print("peerssss")
         print(peers_to_connect)
         if peers_to_connect:
-            Download_From_Peers(peers_to_connect, selected_torrent_file_path)
-        time.sleep(100)
+            Download_From_Peers(peers_to_connect, selected_torrent_file_path, client_sock)
+
+        with DONE_DOWNLOAD_LOCK:
+            if DONE_DOWNLOAD:
+                print("done downloading!!")
