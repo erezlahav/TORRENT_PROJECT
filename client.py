@@ -15,7 +15,7 @@ from tcp_by_size import send_with_size, recv_by_size
 import struct
 import P2P
 
-TRACKER_IP = "127.0.0.1"
+TRACKER_IP = "192.168.1.247"
 TRACKER_PORT = 5000
 SLEEPING_STATUS_UPDATE = 30
 SELECTED_FILE = ""
@@ -118,7 +118,6 @@ def show_progress_bar(total_pieces):
     progressbar_widget = ttk.Progressbar(PROGRESS_BAR_WINDOW, variable=PROGRESS_BAR, maximum=100, length=300)
     progressbar_widget.pack(pady=5)
 
-
     PROGRESS_BAR_WINDOW.after(UPDATE_PROGRESS_BAR_TIME, update_progress_bar_loop, total_pieces)
 
     PROGRESS_BAR_WINDOW.mainloop()
@@ -178,9 +177,6 @@ def Download_From_Peers(peer_list: list, torrent_file_path, tracker_sock: socket
     pieces = torrent_info_dict.get("Pieces")
     amount_of_pieces = len(pieces)
 
-    #set the gui for downloading file
-    threading.Thread(target=show_progress_bar, args=(amount_of_pieces,), daemon=True).start()
-
     with CURRENT_DOWNLOAD_FILE_SMART_BITFIELD_LOCK:
         CURRENT_DOWNLOAD_FILE_SMART_BITFIELD = SmartBitfield(amount_of_pieces, MAX_PEERS_DOWNLOADING)
 
@@ -190,8 +186,9 @@ def Download_From_Peers(peer_list: list, torrent_file_path, tracker_sock: socket
 
         if not is_done_temp:
             for peer in peer_list:
-                download_thread = threading.Thread(target=Download_From_Peer, args=(peer,))
-                download_thread.start()
+                print("peer to connect ====== ")
+                print(peer)
+                threading.Thread(target=Download_From_Peer, args=(peer,)).start()
 
             time.sleep(REQUEST_PEERS_AGAIN_TIME)
             json_request_message = Request_Peers_From_Tracker(tracker_sock, info_hash, PEER_ID)
@@ -212,7 +209,6 @@ def Download_From_Peer(peer: dict):
     global CURRENT_DOWNLOAD_FILE_SMART_BITFIELD_LOCK
     global CNT_DOWNLOADED_PIECES
     global CNT_DOWNLOADED_PIECES_LOCK
-    print("in thread function")
     seeder_ip = peer.get("peer_ip")
     seeder_port = peer.get("peer_port")
     seeder_id = peer.get("peer_id")
@@ -223,9 +219,13 @@ def Download_From_Peer(peer: dict):
 
     info_hash = Get_Info_Hash_From_Torrent_File(torrent_file_path)
     download_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    download_sock.settimeout(10)
     try:
         download_sock.connect((seeder_ip, seeder_port))
-        print("connected successfully")
+        print("connected successfully to ")
+        print(seeder_ip)
+        print(seeder_id)
+        print(seeder_port)
         print("on downloader side")
         P2P.SendHELLO(download_sock, info_hash, PEER_ID)
         dict_recv_mes = P2P.RecvHELLO(download_sock)
@@ -270,6 +270,10 @@ def Download_From_Peer(peer: dict):
 
     except ConnectionError:
         print("not able to connect to " + str(seeder_ip) + " , " + str(peer_port))
+    except TimeoutError:
+        print("timeout has passed limit")
+    except Exception as e:
+        print(e)
     download_sock.close()
 
 
@@ -293,9 +297,7 @@ def Write_Piece_To_File(downloaded_piece: bytes, index: int, chunk_size):
     global CURRENT_FILE_LOCK
     global CURRENT_DOWNLOAD_FILE_PATH
     print("in write piece to file")
-    print("index : " + str(index))
     seek_var = index * chunk_size
-    print("seeking to : " + str(seek_var))
     CURRENT_FILE_LOCK.acquire()
     if not os.path.exists(CURRENT_DOWNLOAD_FILE_PATH):
         with open(CURRENT_DOWNLOAD_FILE_PATH, "w+b") as f:
@@ -324,7 +326,6 @@ def Download_Piece(download_sock: socket, info_hash: str, info_torrent_dict: dic
         block_chunk_content = recvd_give_piece.get("bdata_content")
         chunk_content += block_chunk_content
         current_offset += BLOCK_SIZE
-        print("current offset : " + str(current_offset))
 
     return chunk_content
 
@@ -702,9 +703,13 @@ if __name__ == "__main__":
         print("selected file --- " + SELECTED_FILE)
 
         info_hash = Get_Info_Hash_From_Torrent_File(selected_torrent_file_path)
+        info_dict_torrent = Get_Info_Dictionary_From_Torrent_File(selected_torrent_file_path)
+        amount_of_pieces = len(info_dict_torrent.get("Pieces"))
         json_mes = Request_Peers_From_Tracker(client_sock, info_hash, PEER_ID)
 
         peers_to_connect = Recv_Peers_From_Tracker(client_sock, json_mes)
         print("peerssss")
         print(peers_to_connect)
-        Download_From_Peers(peers_to_connect, selected_torrent_file_path, client_sock)
+        threading.Thread(target=Download_From_Peers,
+                         args=(peers_to_connect, selected_torrent_file_path, client_sock)).start()
+        show_progress_bar(amount_of_pieces)
