@@ -1,3 +1,4 @@
+import base64
 import math
 import os
 import select
@@ -11,10 +12,13 @@ import win32api
 import win32process
 import threading
 import ctypes
+
+import AES_ENCRYPTION
+import RSA_ENCRYPTION
 from tcp_by_size import send_with_size, recv_by_size
 import struct
 import P2P
-
+from Crypto.PublicKey import RSA
 
 TRACKER_IP = "192.168.1.247"
 TRACKER_PORT = 5000
@@ -229,8 +233,25 @@ def Download_From_Peer(peer: dict):
         print(seeder_id)
         print(seeder_port)
         print("on downloader side")
+
+        aes_session_key = AES_ENCRYPTION.Generate_AES_CBC_256_Bit_Key()
+        print("AES SESSION KEY ------- ")
+        print(aes_session_key)
+        #generate aes session key
         P2P.SendHELLO(download_sock, info_hash, PEER_ID)
         dict_recv_mes = P2P.RecvHELLO(download_sock)
+        print("recv HELLO from seeder")
+        print(dict_recv_mes)
+        #send and recv HELLO handshake with seeder
+        b64_rsa_public_key_pem = dict_recv_mes.get("public_key")
+        #base64 decoding the rsa public key
+        rsa_public_key_pem = base64.b64decode(b64_rsa_public_key_pem)
+
+        rsa_public_key = RSA.import_key(rsa_public_key_pem)
+        rsa_enc_aes_session_key = RSA_ENCRYPTION.rsa_encrypt(aes_session_key,rsa_public_key)
+        #get rsa public key from the server(seeder) and encrypt the aes session key with it
+        P2P.Send_RSA_Enc_AES_Session_Key(download_sock, rsa_enc_aes_session_key)
+
         print(dict_recv_mes)
         seeders_bitfield = dict_recv_mes.get("bitfield")
         print("seeders bitfield : " + seeders_bitfield)
@@ -335,6 +356,9 @@ def Download_Piece(download_sock: socket, info_hash: str, info_torrent_dict: dic
 
 def Seed_Thread_Func():
     global SEED_PORT
+    global PUBLIC_KEY_PATH
+    global PRIVATE_KEY_PATH
+    rsa_keys = RSA_ENCRYPTION.Generate_And_Save_Rsa_Keys_In_Disk_PEM(PUBLIC_KEY_PATH, PRIVATE_KEY_PATH)
 
     seed_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     seed_sock.bind(("0.0.0.0", SEED_PORT))
@@ -352,29 +376,44 @@ def Seed_Thread_Func():
                 socket_list.append(downloader_sock)
                 print("new connection from " + str(downloader_addr))
             else:
-                Handle_Downloading_Peer(rsocket, socket_list)
+                Handle_Downloading_Peer(rsocket, socket_list,rsa_keys)
 
 
-def Handle_Downloading_Peer(download_sock: socket, read_sockets_list: list):
+def Handle_Downloading_Peer(download_sock: socket, read_sockets_list: list,rsa_keys : tuple):
     global PEER_ID
+
     dict_hello_mes = P2P.RecvHELLO(download_sock)
     if dict_hello_mes == b'':
         read_sockets_list.remove(download_sock)
         download_sock.close()
     else:
+        private_rsa_key = rsa_keys[0]
+        public_rsa_key = rsa_keys[1]
+        pem_public_rsa_key = public_rsa_key.export_key()
         print("on seeder side")
         print(dict_hello_mes)
         requested_info_hash = dict_hello_mes.get("info_hash")
         print(requested_info_hash)
         requested_file_bitfield = Get_Bit_Field(requested_info_hash)
-        P2P.SendHELLO(download_sock, "info hash", PEER_ID, requested_file_bitfield)
 
-        Give_Pieces(download_sock, requested_info_hash)
+        P2P.SendHELLO(download_sock, requested_info_hash, PEER_ID, requested_file_bitfield,pem_public_rsa_key)
+        enc_aes_session_key_dict_mes = P2P.Recv_RSA_Enc_Aes_Session_Key(download_sock)
+
+        b64_enc_aes_session_key = enc_aes_session_key_dict_mes.get("enc_session_key")
+
+        #base 64 decode to the aes session key
+        enc_aes_session_key = base64.b64decode(b64_enc_aes_session_key)
+        #getting the aes session key encrypted with the rsa seeder's public key
+        aes_session_key = RSA_ENCRYPTION.rsa_decrypt(enc_aes_session_key, private_rsa_key)
+        print("normal aes session key : " + str(aes_session_key))
+        Give_Pieces(download_sock, requested_info_hash,aes_session_key)
 
 
-def Give_Pieces(sock: socket, info_hash):
+def Give_Pieces(sock: socket, info_hash,aes_session_key):
     global SEED_DIRECTORY
     print("in Give piece func")
+    print("AES SESSION KEY ------")
+    print(aes_session_key)
     stop = False
     while not stop:
         recv_data = P2P.Recv_Request_Piece(sock)
