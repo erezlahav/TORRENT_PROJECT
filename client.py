@@ -271,7 +271,7 @@ def Download_From_Peer(peer: dict):
                 CURRENT_DOWNLOAD_FILE_SMART_BITFIELD_LOCK.release()
 
                 if can_download:
-                    downloaded_piece = Download_Piece(download_sock, info_hash, torrent_file_info_dict, index)
+                    downloaded_piece = Download_Piece(download_sock, info_hash, torrent_file_info_dict, index, aes_session_key)
                     if Verify_Downloaded_Piece(downloaded_piece, list_of_pieces_hash[index]):
                         #verify the piece hash with the piece hash from the torrent file
                         print(index)
@@ -337,15 +337,15 @@ def Verify_Downloaded_Piece(downloaded_piece: bytes, piece_hash):
     return piece_hash == hash_of_piece
 
 
-def Download_Piece(download_sock: socket, info_hash: str, info_torrent_dict: dict, index: int) -> bytes:
+def Download_Piece(download_sock: socket, info_hash: str, info_torrent_dict: dict, index: int,aes_session_key) -> bytes:
     global BLOCK_SIZE
     print("in download piece func!!!")
     chunk_size = info_torrent_dict.get("Piece size")
     current_offset = 0
     chunk_content = b""
     while current_offset < chunk_size:
-        P2P.Send_Request_Piece(download_sock, info_hash, index, BLOCK_SIZE, current_offset)
-        recvd_give_piece = P2P.Recv_Give_Piece(download_sock)
+        P2P.Send_And_Encrypt_Request_Piece(download_sock, info_hash, index, BLOCK_SIZE, current_offset,aes_session_key)
+        recvd_give_piece = P2P.Recv_And_Decrypt_Give_Piece(download_sock,aes_session_key)
         block_chunk_content = recvd_give_piece.get("bdata_content")
         chunk_content += block_chunk_content
         current_offset += BLOCK_SIZE
@@ -416,7 +416,7 @@ def Give_Pieces(sock: socket, info_hash,aes_session_key):
     print(aes_session_key)
     stop = False
     while not stop:
-        recv_data = P2P.Recv_Request_Piece(sock)
+        recv_data = P2P.Recv_And_Decrypt_Request_Piece(sock,aes_session_key)
         if recv_data != b'':
             print(recv_data)
             chunk_index = recv_data.get("index")
@@ -436,8 +436,7 @@ def Give_Pieces(sock: socket, info_hash,aes_session_key):
                 chunk_content = chunk.read()
 
             block_of_chunk = chunk_content[current_offset: current_offset + block_size]
-
-            P2P.Send_Give_Piece(sock, block_of_chunk, info_hash, chunk_index, block_size, current_offset)
+            P2P.Send_And_Encrypt_Give_Piece(sock, block_of_chunk, info_hash, chunk_index, block_size, current_offset,aes_session_key)
         else:
             stop = True
 

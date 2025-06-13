@@ -25,7 +25,7 @@ def recv_by_size(sock):
         size_header += _s
     data  = b''
     if size_header != b'':
-        data_len = int(size_header[:size_header_size - 1])
+        data_len = int(size_header[:size_header_size - 1].decode())
         while len(data) < data_len:
             try:
                 _d = sock.recv(data_len - len(data))

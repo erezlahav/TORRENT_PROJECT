@@ -1,4 +1,5 @@
 import json
+import AES_ENCRYPTION
 from tcp_by_size import send_with_size, recv_by_size
 import socket
 import base64
@@ -29,27 +30,30 @@ def RecvHELLO(sock: socket):
     return dict_mes
 
 
-def Send_Request_Piece(sock, info_hash, index: int, block_size: int, current_offset: int):
+def Send_And_Encrypt_Request_Piece(sock, info_hash, index: int, block_size: int, current_offset: int,aes_session_key):
     message_dict = {"type": "REQUEST_PIECE",
                     "info_hash": info_hash,
                     "index": index,
                     "block_size": block_size,
                     "current_offset": current_offset}
     ser_mes = json.dumps(message_dict)
-    send_with_size(sock, ser_mes.encode())
+    final_mes = ser_mes.encode()
+    enc_mes = AES_ENCRYPTION.Encrypt_AES_CBC_PlainText(final_mes,aes_session_key)
+    send_with_size(sock, enc_mes)
 
 
-def Recv_Request_Piece(sock: socket) -> dict:
-    bdata_ser_mes = recv_by_size(sock)
-    if bdata_ser_mes != b'':
+def Recv_And_Decrypt_Request_Piece(sock: socket,aes_session_key) -> dict:
+    enc_bdata_ser_mes = recv_by_size(sock)
+    if enc_bdata_ser_mes != b'':
+        bdata_ser_mes = AES_ENCRYPTION.Decrypt_AES_CBC_CipherText(enc_bdata_ser_mes,aes_session_key)
         ser_mes = bdata_ser_mes.decode()
         mes = json.loads(ser_mes)
         return mes
-    return bdata_ser_mes
+    return enc_bdata_ser_mes
 
 
-def Send_Give_Piece(sock: socket, bdata_content: bytes, info_hash: str, index: int, block_size: int,
-                    current_offset: int):
+def Send_And_Encrypt_Give_Piece(sock: socket, bdata_content: bytes, info_hash: str, index: int, block_size: int,
+                    current_offset: int,aes_session_key):
     b64_enc_content = base64.b64encode(bdata_content).decode()
     message_dict = {"type": "GIVE_PIECE",
                     "info_hash": info_hash,
@@ -58,19 +62,27 @@ def Send_Give_Piece(sock: socket, bdata_content: bytes, info_hash: str, index: i
                     "current_offset": current_offset,
                     "b64_content": b64_enc_content}
     json_ser = json.dumps(message_dict)
+    final_mes = json_ser.encode()
+    print("ready to encrypt...")
+    print(final_mes)
+    enc_mes = AES_ENCRYPTION.Encrypt_AES_CBC_PlainText(final_mes,aes_session_key)
+    print(enc_mes)
+    send_with_size(sock, enc_mes)
 
-    send_with_size(sock, json_ser.encode())
 
+def Recv_And_Decrypt_Give_Piece(sock: socket,aes_session_key) -> dict:
+    enc_bdata_recv = recv_by_size(sock)
+    if enc_bdata_recv != b'':
+        bdata_recv = AES_ENCRYPTION.Decrypt_AES_CBC_CipherText(enc_bdata_recv,aes_session_key)
+        dict_recv_data = bdata_recv.decode()
+        dict_recv_data = json.loads(dict_recv_data)
+        b64_enc_content = dict_recv_data.get("b64_content")
+        bdata_content = base64.b64decode(b64_enc_content)
+        dict_recv_data["bdata_content"] = bdata_content
+        del dict_recv_data["b64_content"]
+        return dict_recv_data
 
-def Recv_Give_Piece(sock: socket) -> dict:
-    bdata_recv = recv_by_size(sock)
-    dict_recv_data = bdata_recv.decode()
-    dict_recv_data = json.loads(dict_recv_data)
-    b64_enc_content = dict_recv_data.get("b64_content")
-    bdata_content = base64.b64decode(b64_enc_content)
-    dict_recv_data["bdata_content"] = bdata_content
-    del dict_recv_data["b64_content"]
-    return dict_recv_data
+    return enc_bdata_recv
 
 
 def Send_RSA_Enc_AES_Session_Key(sock: socket, rsa_enc_aes_key_pem: bytes):
