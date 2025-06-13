@@ -15,6 +15,7 @@ from tcp_by_size import send_with_size, recv_by_size
 import struct
 import P2P
 
+
 TRACKER_IP = "192.168.1.247"
 TRACKER_PORT = 5000
 SLEEPING_STATUS_UPDATE = 30
@@ -41,7 +42,8 @@ PROGRESS_BAR = None
 PROGRESS_BAR_WINDOW = None
 DONE_DOWNLOAD = False
 DONE_DOWNLOAD_LOCK = threading.Lock()
-
+PUBLIC_KEY_PATH = "CLIENT_RSA_KEYS\\public_key.pem"
+PRIVATE_KEY_PATH = "CLIENT_RSA_KEYS\\private_key.pem"
 
 class SmartBitfield:
     def __init__(self, length, max_peers_downloading):
@@ -330,8 +332,10 @@ def Download_Piece(download_sock: socket, info_hash: str, info_torrent_dict: dic
     return chunk_content
 
 
+
 def Seed_Thread_Func():
     global SEED_PORT
+
     seed_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     seed_sock.bind(("0.0.0.0", SEED_PORT))
     seed_sock.listen(50)
