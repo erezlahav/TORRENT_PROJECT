@@ -1,6 +1,9 @@
 import base64
 import math
 import os
+import string
+import random
+
 import select
 import socket
 import json
@@ -48,6 +51,9 @@ DONE_DOWNLOAD = False
 DONE_DOWNLOAD_LOCK = threading.Lock()
 PUBLIC_KEY_PATH = "CLIENT_RSA_KEYS\\public_key.pem"
 PRIVATE_KEY_PATH = "CLIENT_RSA_KEYS\\private_key.pem"
+LENGTH_OF_PEER_ID = 20
+PEER_PREFIX = "-PY0001-"
+
 
 class SmartBitfield:
     def __init__(self, length, max_peers_downloading):
@@ -713,6 +719,17 @@ def Request_Peers_From_Tracker(sock: socket, info_hash, Peer_id) -> json:
     return json_mes
 
 
+
+def generate_peer_id():
+    global LENGTH_OF_PEER_ID
+    global PEER_PREFIX
+    length = 20
+    suffix_length = length - len(PEER_PREFIX)
+    charset = string.ascii_letters + string.digits
+    suffix = ''.join(random.choices(charset, k=suffix_length))
+    peer_id = PEER_PREFIX + suffix
+    return peer_id
+
 if __name__ == "__main__":
     '''
     with open("a.txt","wb") as f:
@@ -721,7 +738,7 @@ if __name__ == "__main__":
     '''
     Verify_Chunks_In_Disk()
     load_all_torrents()
-    PEER_ID = input("enter peer id\n")
+    PEER_ID = generate_peer_id()
 
     peer_port = int(input("enter your port\n"))
     SEED_PORT = peer_port
